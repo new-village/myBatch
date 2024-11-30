@@ -13,9 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # /dataディレクトリを作成
 RUN mkdir /data/race
-
-EXPOSE 8080
+RUN mkdir /data/horse
 
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
-CMD ["batch_scripts.keibascraper", "202405050812"]
+CMD ["batch_scripts.keibascraper", "2024050508"]
