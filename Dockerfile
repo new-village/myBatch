@@ -11,6 +11,8 @@ COPY requirements.txt /app/requirements.txt
 # 必要なPythonパッケージをインストール
 RUN pip install --no-cache-dir -r requirements.txt
 
+EXPOSE 8080
+
 # /dataディレクトリを作成
 RUN mkdir /data
 

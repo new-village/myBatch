@@ -1,4 +1,5 @@
 import os
+import glob
 import sys
 import time
 import logging
@@ -200,7 +201,7 @@ def collect_race(file_id: str, group_ids: List[str], output_dir: str, max_worker
         List[str]: A list of horse_ids extracted from the merged races.
     """
     start_time = time.perf_counter()
-    race_path = os.path.join(output_dir, f"{file_id}.parquet")
+    race_path = os.path.join(output_dir, f"race_{file_id}.parquet")
     races = []
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -249,7 +250,7 @@ def process_horse_id(horse_id: str) -> None:
     Parameters:
         horse_id (str): A horse ID.
     """
-    horse_path = os.path.join("data/horse", f"{horse_id}.parquet")
+    horse_path = os.path.join("/data", f"horse_{horse_id}.parquet")
     try:
         # Load data using keibascraper
         horse = ks.load('horse', horse_id)
@@ -274,7 +275,12 @@ def collect_horse(horses: List[str], output_dir: str, max_workers: int = 10) -> 
         max_workers (int): The maximum number of worker threads.
     """
     # Skip collecting horse data that already exists
-    existing_files = set(os.path.splitext(file)[0] for file in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, file)))
+    pattern = os.path.join(output_dir, "horse_*.parquet")
+    existing_files = set(
+        os.path.splitext(os.path.basename(file))[0].replace("horse_", "")
+        for file in glob.glob(pattern)
+        if os.path.isfile(file)
+    )    
     horse_ids = list(set(horses) - existing_files)
     logging.info(f"Starting to collect horse data: {len(horse_ids)} records to process.")
 
@@ -308,16 +314,14 @@ def main():
     grouped_race_ids = group_race_ids(race_ids)
 
     # Define the output directories
-    race_dir = "data/race"
-    horse_dir = "data/horse"
-    os.makedirs(race_dir, exist_ok=True)  # Ensure race directory exists
-    os.makedirs(horse_dir, exist_ok=True)  # Ensure horse directory exists
+    output_dir = "/data"
+    os.makedirs(output_dir, exist_ok=True)  # Ensure race directory exists
 
     # Process each group and collect horse IDs
     horses = []
     for file_id, group_ids in grouped_race_ids.items():
         logging.info(f"Processing group {file_id} with {len(group_ids)} race IDs.")
-        horse_ids = collect_race(file_id, group_ids, race_dir)
+        horse_ids = collect_race(file_id, group_ids, output_dir)
         horses.extend(horse_ids)
 
     # Remove duplicates and convert to list
@@ -325,7 +329,7 @@ def main():
     logging.info(f"Total unique horse IDs to collect: {len(unique_horses)}")
 
     # Collect horse data
-    collect_horse(unique_horses, horse_dir)
+    collect_horse(unique_horses, output_dir)
 
 
 if __name__ == "__main__":
