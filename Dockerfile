@@ -17,4 +17,4 @@ RUN mkdir /data/horse
 
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
-CMD ["batch_scripts.keibascraper", "2024050508"]
+CMD ["batch_scripts.keibascraper", "202410"]
