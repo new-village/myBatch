@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # /dataディレクトリを作成
 RUN mkdir /data
 
+EXPOSE 8080
+
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
 CMD ["batch_scripts.keibascraper", "202405050812"]

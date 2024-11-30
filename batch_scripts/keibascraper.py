@@ -19,7 +19,7 @@ def main():
         race_info = ks.load('entry', race_id)
 
         # 出力ディレクトリの確認または作成
-        output_dir = "data"
+        output_dir = "/data"
         os.makedirs(output_dir, exist_ok=True)
 
         # parquet形式で保存
