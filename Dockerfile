@@ -12,8 +12,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # /dataディレクトリを作成
-RUN mkdir /data/race
-RUN mkdir /data/horse
+RUN mkdir /data
 
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
