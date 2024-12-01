@@ -5,7 +5,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # 必要なファイルをコピー
-COPY batch_scripts /app/batch_scripts
+COPY scripts /app/scripts
 COPY requirements.txt /app/requirements.txt
 
 # 必要なPythonパッケージをインストール
@@ -16,4 +16,4 @@ RUN mkdir /data
 
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
-CMD ["batch_scripts.keibascraper", "202405050812"]
+CMD ["scripts.keiba_scraper", "202405050812"]

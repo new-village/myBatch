@@ -1,5 +1,4 @@
 import os
-import glob
 import sys
 import time
 import logging
@@ -9,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import keibascraper as ks  # Function to retrieve data from keibascraper library
+import scripts.keiba_scraper as ks  # Function to retrieve data from keibascraper library
 
 
 def setup_logging():
