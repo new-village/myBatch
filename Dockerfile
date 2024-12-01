@@ -5,7 +5,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # 必要なファイルをコピー
-COPY scripts /app/scripts
+COPY keiba_scraper /app/keiba_scraper
+COPY cloud_storage /app/cloud_storage
 COPY requirements.txt /app/requirements.txt
 
 # 必要なPythonパッケージをインストール
@@ -16,4 +17,4 @@ RUN mkdir /data
 
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
-CMD ["scripts.keibascraper", "202405050812"]
+CMD ["keiba_scraper.run", "202405050812"]
