@@ -16,4 +16,4 @@ RUN mkdir /data
 
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
-CMD ["scripts/keiba_scraper.py", "202405050812"]
+CMD ["scripts.keibascraper", "202405050812"]

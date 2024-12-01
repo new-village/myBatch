@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import keiba_scraper as ks  # Function to retrieve data from keibascraper library
+import keibascraper as ks  # Function to retrieve data from keibascraper library
 
 
 def setup_logging():
@@ -257,7 +257,7 @@ def process_horse_id(horse_id: str) -> None:
             # Save nested data to Parquet format
             table = pa.Table.from_pylist([horse])
             pq.write_table(table, horse_path)
-            logging.info(f"Saved horse data for {horse_id} to {horse_path}")
+            # logging.info(f"Saved horse data for {horse_id} to {horse_path}")
         else:
             logging.warning(f"No data found for horse ID {horse_id}.")
     except Exception as e:
