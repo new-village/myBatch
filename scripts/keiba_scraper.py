@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import scripts.keiba_scraper as ks  # Function to retrieve data from keibascraper library
+import keiba_scraper as ks  # Function to retrieve data from keibascraper library
 
 
 def setup_logging():
