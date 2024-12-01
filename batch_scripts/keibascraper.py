@@ -250,7 +250,7 @@ def process_horse_id(horse_id: str) -> None:
     Parameters:
         horse_id (str): A horse ID.
     """
-    horse_path = os.path.join("/data", f"horse_{horse_id}.parquet")
+    horse_path = os.path.join("/data/horse", f"horse_{horse_id}.parquet")
     try:
         # Load data using keibascraper
         horse = ks.load('horse', horse_id)
@@ -275,7 +275,7 @@ def collect_horse(horses: List[str], output_dir: str, max_workers: int = 10) -> 
         max_workers (int): The maximum number of worker threads.
     """
     # Skip collecting horse data that already exists
-    pattern = os.path.join(output_dir, "horse_*.parquet")
+    pattern = os.path.join(output_dir + '/horse', "horse_*.parquet")
     existing_files = set(
         os.path.splitext(os.path.basename(file))[0].replace("horse_", "")
         for file in glob.glob(pattern)
@@ -316,6 +316,9 @@ def main():
     # Define the output directories
     output_dir = "/data"
     os.makedirs(output_dir, exist_ok=True)  # Ensure race directory exists
+    os.makedirs('/data/horse', exist_ok=True)
+    os.makedirs('/data/race', exist_ok=True)
+
 
     # Process each group and collect horse IDs
     horses = []
