@@ -1,332 +1,234 @@
 import os
-import sys
-import time
+import sqlite3
+import argparse
 import logging
-from typing import List, Dict
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import keibascraper
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-import keibascraper as ks  # Function to retrieve data from keibascraper library
-
-
-def setup_logging():
+def setup_logger():
     """
-    Configures the logging settings for the script.
-    Logs are written to both the console and a file named 'keibascraper.log'.
+    ロガーをセットアップする。
+    ここではINFOレベルでコンソール出力を行うロガーを返す。
     """
-    logging.basicConfig(
-        level=logging.INFO,  # Change to DEBUG for more verbosity
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler("keibascraper.log")
-        ]
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s'
     )
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
+    return logger
 
-def parse_arguments() -> List[str]:
+def create_tables(conn, table_names, logger):
     """
-    Parses command-line arguments and returns the list of race IDs.
-
-    The argument can be:
-        - 6 digits: representing year and month.
-        - 10 digits: a race list ID to be expanded.
-        - 12 digits: a single race ID.
-
-    Returns:
-        List[str]: A list of race IDs to process.
-
-    Exits:
-        If an invalid number of arguments or invalid race_id length is provided.
+    指定されたテーブル名リストに従って、テーブルを作成する。
+    すでに存在する場合は何もしない。
     """
-    if len(sys.argv) < 2:
-        logging.error("Usage: python -m batch_scripts.keibascraper <parameter: 6 digit or 10 digit or 12 digit>")
-        sys.exit(1)
-
-    race_id = sys.argv[1]
-    if len(race_id) == 10:
-        try:
-            race_ids = expand_race_id(race_id)
-            logging.info(f"Expanded 10-digit race ID '{race_id}' into {len(race_ids)} race IDs.")
-        except ValueError as e:
-            logging.error(e)
-            sys.exit(1)
-    elif len(race_id) == 6:
-        year = race_id[:4]
-        month = race_id[-2:]
-        try:
-            race_ids = ks.race_list(year, month)
-            if not race_ids:
-                logging.error(f"No race IDs found for year {year} and month {month}.")
-                sys.exit(1)
-            logging.info(f"Loaded {len(race_ids)} race IDs for year {year} and month {month}.")
-        except Exception as e:
-            logging.error(f"Failed to load race list for year {year} and month {month}: {e}")
-            sys.exit(1)
-    elif len(race_id) == 12:
-        race_ids = [race_id]
-        logging.info(f"Single 12-digit race ID provided: {race_id}")
-    else:
-        logging.error(f"Invalid parameter length: {len(race_id)}. Expected 6, 10, or 12 digits.")
-        sys.exit(1)
-
-    logging.info(f"Total race number for collecting: {len(race_ids)}")
-    return race_ids
-
-
-def expand_race_id(race_id: str) -> List[str]:
-    """
-    Expands a 10-digit race ID by appending '01' to '12', resulting in 12 12-digit race IDs.
-
-    If the race ID is already 12 digits, it returns a list containing the race ID as is.
-
-    Parameters:
-        race_id (str): The input race ID.
-
-    Returns:
-        List[str]: A list of expanded race IDs.
-
-    Raises:
-        ValueError: If the race_id length is not 10 or 12.
-    """
-    if len(race_id) == 12:
-        return [race_id]
-    elif len(race_id) == 10:
-        return [f"{race_id}{str(i).zfill(2)}" for i in range(1, 13)]
-    else:
-        raise ValueError(f"Invalid race_id length ({len(race_id)}): {race_id}")
-
-
-def group_race_ids(race_id_list: List[str]) -> Dict[str, List[str]]:
-    """
-    Groups a list of 12-digit race IDs into a dictionary based on their first 10 digits.
-
-    Parameters:
-        race_id_list (List[str]): A list of 12-digit race ID strings.
-
-    Returns:
-        Dict[str, List[str]]: A dictionary with 10-digit race ID prefixes as keys and lists of 12-digit race IDs as values.
-    """
-    grouped_race_ids = defaultdict(list)
-    
-    for race_id in race_id_list:
-        if not isinstance(race_id, str):
-            logging.warning(f"race_id '{race_id}' is not a string. Skipping.")
-            continue
-        
-        if len(race_id) != 12:
-            logging.warning(f"race_id '{race_id}' has invalid length ({len(race_id)}). Skipping.")
-            continue
-        
-        prefix = race_id[:10]  # Extract the first 10 digits
-        grouped_race_ids[prefix].append(race_id)
-    
-    logging.info(f"Grouped race IDs into {len(grouped_race_ids)} groups based on 10-digit prefixes.")
-    return dict(grouped_race_ids)
-
-
-def merge_race_and_odds(race: Dict, odds: List[Dict]) -> Dict:
-    """
-    Merges race data with odds data based on matching 'id' fields.
-
-    Parameters:
-        race (Dict): The first dataset containing race information with an "entry" key.
-        odds (List[Dict]): The second dataset containing odds information, each with an "id" key.
-
-    Returns:
-        Dict: The merged race data.
-    """
-    if 'entry' not in race:
-        raise ValueError("The race data does not contain 'entry' key.")
-
-    # Create a dictionary for quick lookup of odds by 'id'
-    odds_lookup = {item['id']: item for item in odds if 'id' in item}
-
-    merged_entries = []
-    for entry in race.get('entry', []):
-        entry_id = entry.get('id')
-        if not entry_id:
-            logging.warning("An entry in race data does not have an 'id' key. Entry skipped.")
-            continue
-
-        if entry_id in odds_lookup:
-            # Merge the two dictionaries. Odds data values will overwrite race data if keys overlap.
-            merged_entry = {**entry, **odds_lookup[entry_id]}
-            merged_entries.append(merged_entry)
-        else:
-            # If no matching odds data, keep the entry as is
-            logging.info(f"No matching odds data for entry ID {entry_id}. Entry added without merging.")
-            merged_entries.append(entry)
-
-    # Update the race data with merged entries
-    race["entry"] = merged_entries
-    return race
-
-
-def process_race_id(race_id: str) -> Dict:
-    """
-    Processes a single race ID by loading race and odds data, merging them.
-
-    Parameters:
-        race_id (str): A 12-digit race ID.
-
-    Returns:
-        Dict: The merged race data if successful, None otherwise.
-    """
+    cursor = conn.cursor()
     try:
-        # Load data using keibascraper
-        race_info = ks.load('result', race_id)
-        odds_info = ks.load('odds', race_id)
-        merged_race = merge_race_and_odds(race_info, odds_info)
-        return merged_race
+        for table_name in table_names:
+            create_table_query = keibascraper.create_table_sql(table_name)
+            cursor.execute(create_table_query)
+        conn.commit()
+        logger.info("All specified tables are ready.")
     except Exception as e:
-        logging.error(f"Error processing race ID {race_id}: {e}")
-        return None
+        conn.rollback()
+        logger.error(f"Error occurred while creating tables: {e}")
+        raise
 
-
-def collect_race(file_id: str, group_ids: List[str], output_dir: str, max_workers: int = 10) -> List[str]:
+def insert_data(conn, table_name, data, logger, data_id=None):
     """
-    Processes a group of race IDs: loads data, merges race and odds, and saves to Parquet.
-
-    Parameters:
-        file_id (str): The 10-digit prefix used as the filename.
-        group_ids (List[str]): A list of 12-digit race IDs.
-        output_dir (str): Directory where Parquet files are saved.
-        max_workers (int): The maximum number of worker threads.
-
-    Returns:
-        List[str]: A list of horse_ids extracted from the merged races.
+    指定したテーブルにデータを挿入する。
+    dataはlist of dict形式で、カラム名はdictのキーから取得する。
+    data_idはログ出力用のID情報。
     """
-    start_time = time.perf_counter()
-    race_path = os.path.join(output_dir, f"{file_id}.parquet")
-    races = []
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all race_ids to the executor
-        future_to_race_id = {executor.submit(process_race_id, race_id): race_id for race_id in group_ids}
-        for future in as_completed(future_to_race_id):
-            race_id = future_to_race_id[future]
-            result = future.result()
-            if result:
-                races.append(result)
-    
-    if races:
-        try:
-            # Save nested data to Parquet format
-            table = pa.Table.from_pylist(races)
-            pq.write_table(table, race_path)
-            logging.info(f"Saved {len(races)} races to {race_path}")
-        except Exception as e:
-            logging.error(f"Error saving Parquet file {race_path}: {e}")
-    else:
-        logging.warning(f"No valid race data to save for {file_id}.parquet")
-
-    # Extract horse_ids from merged races
-    horse_ids = set()
-    for race in races:
-        entries = race.get("entry", [])
-        for entry in entries:
-            horse_id = entry.get("horse_id")
-            if horse_id:
-                horse_ids.add(horse_id)
-            else:
-                logging.warning(f"Entry missing 'horse_id': {entry}")
-
-    # Record the end time
-    end_time = time.perf_counter()
-    elapsed_time = end_time - start_time
-    logging.info(f"Completed collecting {race_path}: {elapsed_time:.6f} seconds")
-    
-    return list(horse_ids)
-
-
-def process_horse_id(horse_id: str) -> None:
-    """
-    Processes a single horse ID by loading horse data and saving it to Parquet.
-
-    Parameters:
-        horse_id (str): A horse ID.
-    """
-    horse_path = os.path.join("/data/horse", f"{horse_id}.parquet")
+    if not data:
+        return
+    cursor = conn.cursor()
     try:
-        # Load data using keibascraper
-        horse = ks.load('horse', horse_id)
-        if horse:
-            # Save nested data to Parquet format
-            table = pa.Table.from_pylist([horse])
-            pq.write_table(table, horse_path)
-            # logging.info(f"Saved horse data for {horse_id} to {horse_path}")
-        else:
-            logging.warning(f"No data found for horse ID {horse_id}.")
+        columns = ', '.join(data[0].keys())
+        placeholders = ', '.join(['?'] * len(data[0]))
+        insert_query = f"INSERT OR IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})"
+        cursor.executemany(insert_query, [tuple(row.values()) for row in data])
     except Exception as e:
-        logging.error(f"Error processing horse ID {horse_id}: {e}")
+        conn.rollback()
+        logger.error(f"Error inserting data into '{table_name}' (ID={data_id}): {e}")
+        raise
 
-
-def collect_horse(horses: List[str], output_dir: str, max_workers: int = 10) -> None:
+def load_all_data_for_race_id(race_id, logger):
     """
-    Collects horse data by race and saves to Parquet files.
-
-    Parameters:
-        horses (List[str]): A list of unique horse IDs to collect data for.
-        output_dir (str): Directory where Parquet files are saved.
-        max_workers (int): The maximum number of worker threads.
+    単一のrace_idに対して resultデータ、horseデータ、oddsデータをロードする。
+    戻り値は (race: list[dict], result: list[dict], horse: list[dict], history: list[dict], odds: list[dict])
+    horse, historyはrace_id配下の全馬に対するデータをまとめる。
+    oddsは該当race_idに対するオッズデータ。
     """
-    # Skip collecting horse data that already exists
-    existing_files = set(os.path.splitext(file)[0] for file in os.listdir(output_dir))    
-    horse_ids = list(set(horses) - existing_files)
-    logging.info(f"Starting to collect horse data: {len(horse_ids)} records to process.")
+    # race,result取得
+    try:
+        race, result = keibascraper.load("result", race_id)
+    except Exception as e:
+        logger.error(f"Failed to load result data for race_id={race_id}: {e}")
+        return [], [], [], [], []
 
-    start_time = time.perf_counter()
+    # odds取得
+    try:
+        odds = keibascraper.load("odds", race_id)
+    except Exception as e:
+        logger.error(f"Failed to load odds data for race_id={race_id}: {e}")
+        odds = []
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_horse_id, horse_id): horse_id for horse_id in horse_ids}
+    horse_data = []
+    history_data = []
+    for row in result:
+        horse_id = row["horse_id"]
+        try:
+            horse, history = keibascraper.load("horse", horse_id)
+            horse_data.extend(horse)
+            history_data.extend(history)
+        except Exception as e:
+            logger.error(f"Failed to load horse data horse_id={horse_id} from race_id={race_id}: {e}")
+            continue
+
+    return race, result, horse_data, history_data, odds
+
+def expand_race_ids(base_race_id):
+    """
+    入力されたbase_race_idの長さに応じてrace_idリストを展開する。
+    - 12桁: そのまま1件のリスト
+    - 10桁: 下2桁を01~12に展開
+    - 6桁: 年月からkeibascraper.race_listを使って展開
+    """
+    if len(base_race_id) == 12:
+        return [base_race_id]
+    elif len(base_race_id) == 10:
+        return [f"{base_race_id}{str(i).zfill(2)}" for i in range(1, 13)]
+    elif len(base_race_id) == 6:
+        year = base_race_id[:4]
+        month = base_race_id[4:]
+        return keibascraper.race_list(year, month)
+    else:
+        raise ValueError("Race ID must be 6, 10, or 12 characters long.")
+
+def build_chunks(race_ids):
+    """
+    race_idsのリストをrace_id[:10]ごとにグルーピングし、dictで返す。
+    key: prefix(先頭10文字)
+    value: prefixを共有するrace_idのリスト
+    """
+    chunks = {}
+    for rid in race_ids:
+        prefix = rid[:10]
+        if prefix not in chunks:
+            chunks[prefix] = []
+        chunks[prefix].append(rid)
+    return chunks
+
+def fetch_chunk_data(ids, logger):
+    """
+    1チャンク内の複数のrace_idについて、並列処理でデータをロードする。
+    戻り値は `data_map` 辞書で、{"race": [...], "result": [...], "horse": [...], "history": [...], "odds": [...]} の形式。
+    """
+    data_map = {
+        "race": [],
+        "result": [],
+        "horse": [],
+        "history": [],
+        "odds": []
+    }
+
+    def load_task(rid):
+        return load_all_data_for_race_id(rid, logger)
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(load_task, rid): rid for rid in ids}
         for future in as_completed(futures):
-            horse_id = futures[future]
+            rid = futures[future]
             try:
-                future.result()
+                race, result, horse_data, history_data, odds_data = future.result()
+                data_map["race"].extend(race)
+                data_map["result"].extend(result)
+                data_map["horse"].extend(horse_data)
+                data_map["history"].extend(history_data)
+                data_map["odds"].extend(odds_data)
             except Exception as e:
-                logging.error(f"Unhandled exception for horse ID {horse_id}: {e}")
+                logger.error(f"Error in future for race_id={rid}: {e}")
 
-    # Record the end time
-    end_time = time.perf_counter()
-    elapsed_time = end_time - start_time
-    logging.info(f"Completed collecting horse data: {elapsed_time:.6f} seconds")
+    return data_map
 
+def write_chunk_data(conn, logger, prefix, data_map):
+    """
+    1チャンク分のデータをDBへ書き込む処理。
+    data_mapをもとに、キーがテーブル名、値がデータリストとして挿入する。
+    全データ挿入後、コミットを行う。(エラー時はロールバック)
+    """
+    try:
+        for table_name, dataset in data_map.items():
+            if dataset:
+                insert_data(conn, table_name, dataset, logger, data_id=prefix)
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Unexpected error inserting data for prefix={prefix}: {e}")
+        conn.rollback()
+
+def process_single_chunk(conn, logger, prefix, ids):
+    """
+    1チャンク(prefix)分の処理を行う。
+    並列でデータを取得(fetch_chunk_data)し、その後DBへ書き込む(write_chunk_data)。
+    """
+    logger.info(f"Processing race ID block with prefix {prefix}")
+    data_map = fetch_chunk_data(ids, logger)
+    write_chunk_data(conn, logger, prefix, data_map)
+
+def process_chunks(conn, logger, chunks):
+    """
+    全てのチャンクをループ処理する。
+    開始時にチャンク数を表示し、各チャンクをprocess_single_chunkで処理。
+    """
+    logger.info(f"Total number of chunks to process: {len(chunks)}")
+    for prefix, ids in chunks.items():
+        process_single_chunk(conn, logger, prefix, ids)
+    logger.info("All specified race IDs have been processed.")
+
+def parse_arguments():
+    """
+    コマンドライン引数をパースする。
+    必須引数として race_id を受け取る。
+    """
+    parser = argparse.ArgumentParser(description="Create tables and process keiba data.")
+    parser.add_argument("race_id", type=str, help="Base Race ID (6, 10, or 12 characters)")
+    return parser.parse_args()
 
 def main():
     """
-    Main function that orchestrates the processing of race IDs.
+    メイン処理:
+    - 引数パース
+    - ロガー設定
+    - DBやテーブルの初期化
+    - race_ids展開
+    - chunks作成
+    - 全チャンク処理開始
     """
-    setup_logging()
+    args = parse_arguments()
+    logger = setup_logger()
+    db_path = "/data/keiba.sqlite"
+    table_names = ["race", "horse", "history", "result", "entry", "odds"]
 
-    # Parse arguments to get race_ids
-    race_ids = parse_arguments()
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
 
-    # Group race_ids by their first 10 digits
-    grouped_race_ids = group_race_ids(race_ids)
-
-    # Define the output directories
-    race_dir = '/data/race'
-    horse_dir = '/data/horse'
-    os.makedirs(race_dir, exist_ok=True)
-    os.makedirs(horse_dir, exist_ok=True)
-
-    # Process each group and collect horse IDs
-    horses = []
-    for file_id, group_ids in grouped_race_ids.items():
-        logging.info(f"Processing group {file_id} with {len(group_ids)} race IDs.")
-        horse_ids = collect_race(file_id, group_ids, race_dir)
-        horses.extend(horse_ids)
-
-    # Remove duplicates and convert to list
-    unique_horses = list(set(horses))
-    logging.info(f"Total unique horse IDs to collect: {len(unique_horses)}")
-
-    # Collect horse data
-    collect_horse(unique_horses, horse_dir)
-
+    try:
+        create_tables(conn, table_names, logger)
+        race_ids = expand_race_ids(args.race_id)
+        chunks = build_chunks(race_ids)
+        process_chunks(conn, logger, chunks)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     main()
