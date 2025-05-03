@@ -14,10 +14,14 @@ def setup_logger():
         handlers=[logging.StreamHandler(sys.stdout)]
     )
 
-def get_output_file():
-    """出力ファイルのパスを返す"""
-    output_dir = "/data"
+def get_output_file(year=None):
+    """出力ファイルのパスを返す（年でパーティション分け）"""
+    base_dir = "/data"  # 絶対パスに修正
     try:
+        if year:
+            output_dir = os.path.join(base_dir, f"year={year}")
+        else:
+            output_dir = base_dir
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         return os.path.join(output_dir, "sagikoza.parquet")
@@ -59,7 +63,7 @@ def main():
         year = sys.argv[1] if len(sys.argv) > 1 else None
         df = fetch_data(year)
         logging.info(f"取得データ件数: {len(df)} 件")
-        output_file = get_output_file()
+        output_file = get_output_file(year)
         save_data(df, output_file)
     except Exception as e:
         logging.error(f"メイン処理でエラー: {e}")
