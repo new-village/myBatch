@@ -5,10 +5,11 @@ import os
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python run.py <year>")
-        sys.exit(1)
-    year = sys.argv[1]
-    data = sagikoza.fetch(year)
+        # 引数が無い場合は fetch() を引数なしで実行
+        data = sagikoza.fetch()
+    else:
+        year = sys.argv[1]
+        data = sagikoza.fetch(year)
     df = pd.DataFrame(data)
     # dataディレクトリの作成
     output_dir = os.path.join(os.path.dirname(__file__), "..", "data")
