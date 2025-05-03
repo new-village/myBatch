@@ -1,15 +1,15 @@
 import sys
-import sagikoza_collector
+import sagikoza
 import pandas as pd
 import os
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         # 引数が無い場合は fetch() を引数なしで実行
-        data = sagikoza_collector.fetch()
+        data = sagikoza.fetch()
     else:
         year = sys.argv[1]
-        data = sagikoza_collector.fetch(year)
+        data = sagikoza.fetch(year)
     df = pd.DataFrame(data)
     # dataディレクトリの作成
     output_dir = os.path.join(os.path.dirname(__file__), "..", "data")
