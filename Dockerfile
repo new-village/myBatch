@@ -7,7 +7,7 @@ WORKDIR /app
 # 必要なファイルをコピー
 COPY keiba_scraper /app/keiba_scraper
 COPY cloud_storage /app/cloud_storage
-COPY sagikoza /app/sagikoza
+COPY sagikoza_collector /app/sagikoza_collector
 COPY requirements.txt /app/requirements.txt
 
 # 必要なPythonパッケージをインストール
