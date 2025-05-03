@@ -3,6 +3,8 @@ import sagikoza
 import pandas as pd
 import os
 import logging
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 def setup_logger():
     """ロガーの設定を行う"""
@@ -36,12 +38,16 @@ def fetch_data(year=None):
         raise
 
 def save_data(df, output_file):
-    """データをParquet形式で保存（既存があればappend）"""
+    """データをParquet形式で保存（append対応、低メモリ）"""
     try:
+        table = pa.Table.from_pandas(df)
         if os.path.exists(output_file):
-            existing_df = pd.read_parquet(output_file)
-            df = pd.concat([existing_df, df], ignore_index=True)
-        df.to_parquet(output_file, index=False)
+            # 既存ファイルにappend
+            with pq.ParquetWriter(output_file, table.schema, use_dictionary=True, compression='snappy') as writer:
+                # 既存データは読み込まず、新規データのみappend
+                writer.write_table(table)
+        else:
+            pq.write_table(table, output_file, use_dictionary=True, compression='snappy')
         logging.info(f"Saved to {output_file}")
     except Exception as e:
         logging.error(f"データ保存時にエラー: {e}")
