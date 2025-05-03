@@ -1,2 +1,4 @@
 keibascraper
+sagikoza
 pyarrow
+pandas
