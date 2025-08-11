@@ -226,8 +226,14 @@ def fill_missing_furigana(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 if __name__ == "__main__":
+    # 引数処理
+    if len(sys.argv) > 1:
+        input_filename = sys.argv[1]
+    else:
+        input_filename = "corporate_registry_202508"
+
     # データロード
-    df_corporate = load_parquet("corporate_registry_202508")
+    df_corporate = load_parquet(input_filename)
     df_corporate = df_corporate[['name', 'furigana', 'corporate_number']].set_index('corporate_number')
     # データをエンリッチ
     df_corporate = enrich_dataframe(df_corporate)
@@ -235,4 +241,4 @@ if __name__ == "__main__":
 
     # ファイルを最終化
     df_corporate.drop(columns=['work_kana'], inplace=True, errors='ignore')
-    save_csv(df_corporate, "corporate_registry_202508_enriched")
+    save_csv(df_corporate, f"{input_filename}_enriched")
