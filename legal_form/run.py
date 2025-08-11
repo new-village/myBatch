@@ -2,6 +2,7 @@ import sys
 import pandas as pd
 import os
 import logging
+import numpy as np
 from sudachipy import dictionary, tokenizer
 from pathlib import Path
 import threading
@@ -10,6 +11,8 @@ import re
 
 # Base Directory
 base_dir = "/data"
+# base_dir = "./data" # デバッグ用にローカルの data ディレクトリを指定
+
 # Resolve Sudachi config relative to this file to avoid CWD issues
 CONFIG_PATH = (Path(__file__).resolve().parent / "dict" / "sudachi.json")
 
@@ -188,6 +191,8 @@ def fill_missing_furigana(df: pd.DataFrame) -> pd.DataFrame:
     他は reliability=0
     """
 
+    logger.info(f"[furigana] filling: rows={len(df)}")
+
     def hiragana_to_katakana(text: str) -> str:
         # ひらがな Unicode: 3041-3096, カタカナ: 30A1-30F6
         return "".join(
@@ -227,14 +232,25 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         input_filename = sys.argv[1]
     else:
-        input_filename = "corporate_registry_202508"
+        input_filename = "corpreg_202508"
 
     # データロード
     df_corporate = load_parquet(input_filename)
-    # データをエンリッチ
-    df_corporate = enrich_dataframe(df_corporate)
-    df_corporate = fill_missing_furigana(df_corporate)
 
+    # メモリエラーを回避するためにデータを分割
+    num_chunks = 10
+    chunks = np.array_split(df_corporate, num_chunks)
+
+    # データをエンリッチ
+    chunk_list = []
+    for i, chunk in enumerate(chunks):
+        logging.info(f"[loop] {i+1}/{num_chunks} 開始: rows={len(chunk)}")
+        chunk = enrich_dataframe(chunk)
+        chunk = fill_missing_furigana(chunk)
+        chunk.drop(columns=['work_kana'], inplace=True, errors='ignore')
+        chunk_list.append(chunk)
+
+    # 分割されたファイルを一つのデータセットに統合
+    df_corporate = pd.concat(chunk_list, ignore_index=False)
     # ファイルを最終化
-    df_corporate.drop(columns=['work_kana'], inplace=True, errors='ignore')
     save_csv(df_corporate, f"{input_filename}_enriched")
