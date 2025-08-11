@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import re
+import cnparser
 
 # Base Directory
 base_dir = "/data"
@@ -65,7 +66,7 @@ def make_progress_logger(total: int, step: int = 10, log_func=logging.info):
 
     return update, done
 
-def load_parquet(filename: str) -> pd.DataFrame:
+def load_corporate_registry(prefecture:str = "All") -> pd.DataFrame:
     """/data 配下から単一の .parquet ファイルを pandas で読み込む関数。
 
     - filename: /data 直下またはサブディレクトリのファイル名。拡張子がなければ自動で .parquet を付与。
@@ -75,17 +76,20 @@ def load_parquet(filename: str) -> pd.DataFrame:
         df = load_parquet_from_data("corporate_registry_202508.parquet")
         df = load_parquet_from_data("subdir/file.parquet")
     """
-    full_path = os.path.join(base_dir, filename + '.parquet')
+    # 日付を付与してファイル名を決定
+    logger.info("Loading corporate registry...")
 
-    if os.path.exists(full_path):
-        # 必要な列のみ読み込み
-        df = pd.read_parquet(full_path, columns=["name", "furigana", "corporate_number"])
+    # 法人情報を取得して保存
+    df = cnparser.load(prefecture)
+    save_parquet(df, f"corporate_registry_{prefecture}")
+
+    if df is not None:
+        df = df[["name", "furigana", "corporate_number"]]
         df = df.set_index("corporate_number")
-        logging.info(f"Loaded from {full_path}: {df.shape}")
         return df
     else:
-        raise FileNotFoundError(f"File not found: {full_path}")
-
+        logger.error("Corporate registry data is empty.")
+        raise SystemExit(1)
 
 def save_parquet(df: pd.DataFrame, filename: str) -> None:
     """/data 配下に単一の .parquet ファイルを保存する関数。
@@ -97,7 +101,8 @@ def save_parquet(df: pd.DataFrame, filename: str) -> None:
         save_parquet(df, "corporate_registry_202508.parquet")
         save_parquet(df, "subdir/file.parquet")
     """
-    full_path = os.path.join(base_dir, filename + '.parquet')
+    exec_date = pd.Timestamp.now().strftime("%Y%m%d")
+    full_path = os.path.join(base_dir, filename + f'_{exec_date}.parquet')
 
     df.to_parquet(full_path, index=True)
     logging.info(f"Saved to {full_path}: {df.shape}")
@@ -230,12 +235,12 @@ def fill_missing_furigana(df: pd.DataFrame) -> pd.DataFrame:
 if __name__ == "__main__":
     # 引数処理
     if len(sys.argv) > 1:
-        input_filename = sys.argv[1]
+        prefecture = sys.argv[1]
     else:
-        input_filename = "corpreg_202508"
+        prefecture = "ALL"
 
     # データロード
-    df_corporate = load_parquet(input_filename)
+    df_corporate = load_corporate_registry(prefecture)
 
     # メモリエラーを回避するためにデータを分割
     num_chunks = 10
@@ -253,4 +258,4 @@ if __name__ == "__main__":
     # 分割されたファイルを一つのデータセットに統合
     df_corporate = pd.concat(chunk_list, ignore_index=False)
     # ファイルを最終化
-    save_parquet(df_corporate, f"{input_filename}_enriched")
+    save_parquet(df_corporate, f"corporate_registry_{prefecture}_enriched")

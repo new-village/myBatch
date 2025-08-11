@@ -1,6 +1,16 @@
 # myBatch
 これは作成したプロジェクトをGoogle Cloud Run 上で実行するための個人用のバッチ・フレームワークです。
 
+## バッチ
+1. legal_form  
+国税庁の法人登記情報を収集して `/data/corporate_registry_<PREFECTURE>_<EXEC_DATE>.parquet` として保存し、そこに含まれる法人名から法人種別（株式会社など）とブランド名（法人種別を除く名称）、ブランド名のカタカナ名称を推定して `/data/corporate_registry_<PREFECTURE>_enriched_<EXEC_DATE>.parquet` 別データセットとして出力するバッチ。
+下記コマンドで実行可能。`SHIMANE`の部分を`ALL`にすることで全国のデータを収集可能。
+```shell:
+$ python -m legal_form.run SHIMANE
+[INFO] Saved to ./data/corporate_registry_SHIMANE_20250811.parquet: (22853, 30)
+[INFO] Saved to ./data/corporate_registry_SHIMANE_enriched_20250811.parquet: (22853, 5)
+```
+
 ## 実行方法
 1. Google Cloud のコンソールにアクセスして、Google Could Run > ジョブ を開く
 2. コンテナのディプロイを選択
