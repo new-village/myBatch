@@ -9,20 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 
 # Base Directory
-base_dir = "/data"
+base_dir = "./data"
 # Resolve Sudachi config relative to this file to avoid CWD issues
 CONFIG_PATH = (Path(__file__).resolve().parent / "dict" / "sudachi.json")
 
-# Create mode constant and thread-local tokenizer factory
+# Create mode constant and a single global tokenizer with lock protection
 mode = tokenizer.Tokenizer.SplitMode.C
-_tls = threading.local()
-
-def _get_thread_tokenizer():
-    tok = getattr(_tls, "tokenizer", None)
-    if tok is None:
-        tok = dictionary.Dictionary(config_path=str(CONFIG_PATH)).create()
-        _tls.tokenizer = tok
-    return tok
+tk = dictionary.Dictionary(config_path=str(CONFIG_PATH)).create()
+tok_lock = threading.Lock()
 
 # Set up logger object
 logging.basicConfig(
@@ -81,7 +75,9 @@ def load_parquet(filename: str) -> pd.DataFrame:
     full_path = os.path.join(base_dir, filename + '.parquet')
 
     if os.path.exists(full_path):
-        df = pd.read_parquet(full_path)
+        # 必要な列のみ読み込み
+        df = pd.read_parquet(full_path, columns=["name", "furigana", "corporate_number"])
+        df = df.set_index("corporate_number")
         logging.info(f"Loaded from {full_path}: {df.shape}")
         return df
     else:
@@ -104,7 +100,7 @@ def save_csv(df: pd.DataFrame, filename: str) -> None:
     logging.info(f"Saved to {full_path}: {df.shape}")
 
 
-def enrich_corporate_names(corporate_name: str) -> tuple[str, str]:
+def enrich_corporate_names(corporate_name: str) -> tuple[str, str, str]:
     """SudachiPy で社名を形態素解析し、(legal_form, brand_name) を返す。
 
     ルール:
@@ -130,8 +126,9 @@ def enrich_corporate_names(corporate_name: str) -> tuple[str, str]:
     if not isinstance(corporate_name, str) or not corporate_name:
         return "", ""
 
-    tok = _get_thread_tokenizer()
-    morphemes = tok.tokenize(corporate_name, mode)
+    # グローバルトークナイザをロックで保護して利用（1スレッド前提でも安全）
+    with tok_lock:
+        morphemes = tk.tokenize(corporate_name, mode)
     legal_tokens = [m for m in morphemes if is_legal_form_token(m)]
 
     # legal_form は normalized_form を入れる
@@ -150,7 +147,7 @@ def enrich_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     - df が空、または name_col が存在しない場合は空列を追加して返す。
     - デフォルトで 6 スレッドで実行。
     """
-    max_workers = 6
+    max_workers = 1
 
     if "name" not in df.columns or df.empty:
         df["legal_form"] = pd.Series(index=df.index, dtype=object)
@@ -234,7 +231,6 @@ if __name__ == "__main__":
 
     # データロード
     df_corporate = load_parquet(input_filename)
-    df_corporate = df_corporate[['name', 'furigana', 'corporate_number']].set_index('corporate_number')
     # データをエンリッチ
     df_corporate = enrich_dataframe(df_corporate)
     df_corporate = fill_missing_furigana(df_corporate)
