@@ -87,19 +87,19 @@ def load_parquet(filename: str) -> pd.DataFrame:
         raise FileNotFoundError(f"File not found: {full_path}")
 
 
-def save_csv(df: pd.DataFrame, filename: str) -> None:
-    """/data 配下に単一の .csv ファイルを保存する関数。
+def save_parquet(df: pd.DataFrame, filename: str) -> None:
+    """/data 配下に単一の .parquet ファイルを保存する関数。
 
-    - filename: /data 直下またはサブディレクトリのファイル名。拡張子がなければ自動で .csv を付与。
+    - filename: /data 直下またはサブディレクトリのファイル名。拡張子がなければ自動で .parquet を付与。
 
     例:
-        save_csv(df, "legal_form")
-        save_csv(df, "corporate_registry_202508.csv")
-        save_csv(df, "subdir/file.csv")
+        save_parquet(df, "legal_form")
+        save_parquet(df, "corporate_registry_202508.parquet")
+        save_parquet(df, "subdir/file.parquet")
     """
-    full_path = os.path.join(base_dir, filename + '.csv')
+    full_path = os.path.join(base_dir, filename + '.parquet')
 
-    df.to_csv(full_path, index=False)
+    df.to_parquet(full_path, index=True)
     logging.info(f"Saved to {full_path}: {df.shape}")
 
 
@@ -253,4 +253,4 @@ if __name__ == "__main__":
     # 分割されたファイルを一つのデータセットに統合
     df_corporate = pd.concat(chunk_list, ignore_index=False)
     # ファイルを最終化
-    save_csv(df_corporate, f"{input_filename}_enriched")
+    save_parquet(df_corporate, f"{input_filename}_enriched")
