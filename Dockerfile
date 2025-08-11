@@ -8,6 +8,7 @@ WORKDIR /app
 COPY keiba_scraper /app/keiba_scraper
 COPY cloud_storage /app/cloud_storage
 COPY sagikoza_fetch /app/sagikoza_fetch
+COPY corpreg_enrich /app/corpreg_enrich
 COPY requirements.txt /app/requirements.txt
 
 # 必要なPythonパッケージをインストール
@@ -18,4 +19,5 @@ RUN mkdir /data
 
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
-CMD ["keiba_scraper.run", "202405050812"]
+# CMD ["keiba_scraper.run", "202405050812"]
+CMD ['corpreg_enrich.run']
