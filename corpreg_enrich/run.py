@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 
 # Base Directory
-base_dir = "./data"
+base_dir = "/data"
 # Resolve Sudachi config relative to this file to avoid CWD issues
 CONFIG_PATH = (Path(__file__).resolve().parent / "dict" / "sudachi.json")
 
