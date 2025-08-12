@@ -20,4 +20,4 @@ RUN mkdir /data
 # ENTRYPOINTを設定し、CMDで指定されたスクリプトを実行
 ENTRYPOINT ["python", "-m"]
 # CMD ["keiba_scraper.run", "202405050812"]
-CMD ["legal_form.run", "corpreg_202508"]
+CMD ["legal_form.run", "ALL"]
