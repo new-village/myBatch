@@ -8,7 +8,7 @@ from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import re
-import cnparser
+import jpcorpreg
 
 # Base Directory
 base_dir = "/data"
@@ -80,7 +80,7 @@ def load_corporate_registry(prefecture:str = "All") -> pd.DataFrame:
     logger.info("Loading corporate registry...")
 
     # 法人情報を取得して保存
-    df = cnparser.load(prefecture)
+    df = jpcorpreg.load(prefecture)
     save_parquet(df, f"corporate_registry_{prefecture}")
 
     if df is not None:
