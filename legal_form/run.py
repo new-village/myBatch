@@ -84,7 +84,7 @@ def load_corporate_registry(prefecture:str = "All") -> pd.DataFrame:
     save_parquet(df, f"corporate_registry_{prefecture}")
 
     if df is not None:
-        df = df[["name", "furigana", "corporate_number"]]
+        df = df[["name", "furigana", "corporate_number", "kind"]]
         df = df.set_index("corporate_number")
         return df
     else:
