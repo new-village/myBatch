@@ -1,7 +1,7 @@
 {
     "systemDict" : null,
     "characterDefinitionFile" : "char.def",
-    "userDict" : ["/data/ja-entity-parser.dic"],
+    "userDict" : ["ja-entity-parser.dic"],
     "inputTextPlugin" : [
         { "class" : "com.worksap.nlp.sudachi.DefaultInputTextPlugin" },
         { "class" : "com.worksap.nlp.sudachi.ProlongedSoundMarkPlugin",
