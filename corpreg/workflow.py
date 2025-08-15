@@ -143,6 +143,25 @@ def enrich_furigana(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+
+def legal_form_stat(df: pd.DataFrame) -> None:
+    """法人名の報告を行う関数
+    例:
+        legal_form_stat(df)
+    """
+    lf_stat = df[
+        (df['latest'] == 1) &
+        (df['kind'] != '101') &
+        (df['kind'] != '201') &
+        (df['kind'] != '399') &
+        (df['kind'] != '499') &
+        (df['legal_form'].isnull() | (df['legal_form'] == ''))
+    ]
+
+    logger.info(f"Unexpected legal form records: {lf_stat.shape[0]}")
+    cols = ['corporate_number', 'name', 'legal_form', 'brand_name']
+    return lf_stat[cols]
+
 def missing_kanji_stat(df: pd.DataFrame) -> None:
     """法人名の報告を行う関数
     例:
@@ -152,6 +171,16 @@ def missing_kanji_stat(df: pd.DataFrame) -> None:
     logger.info(f"Missing kanji (underscore in name) records: {mk_stat.shape[0]}")
     cols = ['corporate_number', 'name', 'name_image_id']
     return mk_stat[cols]
+
+def furigana_stat(df: pd.DataFrame) -> None:
+    """法人名の報告を行う関数
+    例:
+        furigana_stat(df)
+    """
+    f_stat = df[df['reliability'] == 1]
+    logger.info(f"Furigana enrichment records: {f_stat.shape[0]}")
+    cols = ['corporate_number', 'name', 'brand_name', 'furigana', 'brand_kana']
+    return f_stat[cols]
 
 if __name__ == "__main__":
     exec_date = pd.Timestamp.now().strftime("%Y%m%d")
@@ -191,3 +220,6 @@ if __name__ == "__main__":
     # missing_kanji に関する統計情報を報告
     mk_stat = missing_kanji_stat(merged)
     save_parquet(mk_stat, f"missing_kanji_stat_{exec_date}.parquet")
+    # furigana に関する統計情報を報告
+    f_stat = furigana_stat(merged)
+    save_parquet(f_stat, f"furigana_stat_{exec_date}.parquet")
