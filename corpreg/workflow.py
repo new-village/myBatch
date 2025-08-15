@@ -115,7 +115,6 @@ def enrich_name(df: pd.DataFrame) -> pd.DataFrame:
     例:
         df = enrich_name(df)
     """
-    logger.info(f"Start merging")
     # プロセス並列で Sudachi のグローバル共有を回避
     names = df["name"].tolist() if "name" in df.columns else []
     with ProcessPoolExecutor(max_workers=4) as ex:
@@ -127,30 +126,29 @@ def enrich_name(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"Enrich DataFrame shape: {df.shape}")
     return df
 
-def legal_form_stat(df: pd.DataFrame) -> None:
-    """法人名の報告を行う関数
-    例:
-        legal_form_stat(df)
-    """
-    lf_stat = df[
-        (df['latest'] == 1) &
-        (df['kind'] != '101') &
-        (df['kind'] != '201') &
-        (df['kind'] != '399') &
-        (df['kind'] != '499') &
-        (df['legal_form'].isnull() | (df['legal_form'] == ''))
-    ]
+def enrich_furigana(df: pd.DataFrame) -> pd.DataFrame:
+    """フリナガを補完する関数
 
-    logger.info(f"Unexpected legal form records: {lf_stat.shape[0]}")
-    cols = ['corporate_number', 'name', 'legal_form', 'brand_name']
-    return lf_stat[cols]
+    例:
+        df = enrich_furigana(df)
+    """
+    df['reliability'] = 0
+    # furigana が空白/欠損なら brand_kana を代入し、reliability=1
+    if "furigana" not in df.columns:
+        df["furigana"] = pd.Series([None] * len(df), index=df.index)
+
+    mask = df["furigana"].isna() | df["furigana"].astype(str).str.strip().eq("")
+    df.loc[mask, "furigana"] = df.loc[mask, "brand_kana"]
+    df.loc[mask, "reliability"] = 1
+
+    return df
 
 def missing_kanji_stat(df: pd.DataFrame) -> None:
     """法人名の報告を行う関数
     例:
         missing_kanji_stat(df)
     """
-    mk_stat = df[df["name"].astype(str).str.contains("_", na=False, regex=False)]
+    mk_stat = df[df["name"].astype(str).str.contains("＿", na=False, regex=False)]
     logger.info(f"Missing kanji (underscore in name) records: {mk_stat.shape[0]}")
     cols = ['corporate_number', 'name', 'name_image_id']
     return mk_stat[cols]
@@ -181,6 +179,7 @@ if __name__ == "__main__":
     for i, chunk in enumerate(chunks):
         logger.info(f"Processing chunk {i+1}/{num_chunks} with shape {chunk.shape}")
         chunk = enrich_name(chunk)
+        chunk = enrich_furigana(chunk)
         chunk_list.append(chunk)
 
     merged = pd.concat(chunk_list, ignore_index=True)
