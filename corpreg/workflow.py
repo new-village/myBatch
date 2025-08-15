@@ -5,6 +5,7 @@ import pandas as pd
 import jpcorpreg
 from ja_entityparser import corporate_parser
 from concurrent.futures import ProcessPoolExecutor
+import pyarrow as pa
 
 # Set up logger object
 logging.basicConfig(
@@ -15,18 +16,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_parquet(filename: str) -> pd.DataFrame:
+def load_parquet(filename: str, memory_map: bool = True) -> pd.DataFrame:
     """/data 配下に単一の .parquet ファイルを読み込む関数。
 
     - filename: /data 直下またはサブディレクトリのファイル名。
+    - columns: 読み込む列を限定（省メモリ）
+    - memory_map: OS のメモリマップを使用（省コピー）
 
     例:
-        df = load_parquet("corporate_registry_202508.parquet")
+        df = load_parquet("corporate_registry_202508.parquet", columns=["corporate_number","name"])
         df = load_parquet("subdir/file.parquet")
     """
     full_path = os.path.join("/data", filename)
     if os.path.exists(full_path):
-        df = pd.read_parquet(full_path)
+        df = pd.read_parquet(full_path, engine="pyarrow", dtype_backend="pyarrow", memory_map=True)
         logger.info(f"Loaded from {full_path}: {df.shape}")
     else:
         df = pd.DataFrame(columns=["corporate_number", "name"])
@@ -34,16 +37,14 @@ def load_parquet(filename: str) -> pd.DataFrame:
     return df
 
 def save_parquet(df: pd.DataFrame, filename: str) -> None:
-    """/data 配下に単一の .parquet ファイルを保存する関数。
-
-    - filename: /data 直下またはサブディレクトリのファイル名。
-
-    例:
-        save_parquet(df, "corporate_registry_202508.parquet")
-        save_parquet(df, "subdir/file.parquet")
-    """
+    """/data 配下に単一の .parquet ファイルを保存する関数。"""
     full_path = os.path.join("/data", filename)
-    df.to_parquet(full_path, index=True)
+    df.to_parquet(
+        full_path,
+        engine="pyarrow",
+        compression="zstd",        # snappy でも可。zstd は圧縮率が高め
+        use_dictionary=True,       # 文字列などを辞書エンコード
+    )
     logger.info(f"Saved to {full_path}: {df.shape}")
 
 def fetch(prefecture:str = "ALL") -> pd.DataFrame:
@@ -60,12 +61,10 @@ def fetch(prefecture:str = "ALL") -> pd.DataFrame:
     df = jpcorpreg.load(prefecture=prefecture)
 
     if df is not None:
-        save_parquet(df, f"raw_corpreg_{exec_date}.parquet")
+        save_parquet(df, f"corpreg_nta_{exec_date}.parquet")
     else:
         df = pd.DataFrame(index=pd.Index([], name="corporate_number"))
         logger.warning(f"Corporate registry data do not found. Returning empty DataFrame.")
-    
-    return df
 
 def merge(new: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     """新しい法人情報と古い法人情報をマージする関数
@@ -78,16 +77,15 @@ def merge(new: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
         return new
 
     # 新旧のデータフレームを単純に縦結合して、重複を削除
-    merged = pd.concat([new, base], axis=0)
-    merged.drop_duplicates(keep="first", inplace=True)
+    merged = pd.concat([new, base], axis=0, ignore_index=True)
+    merged.drop_duplicates(subset=["corporate_number", "update_date"],
+                       keep="first", inplace=True, ignore_index=True)
 
     # 全行の latest=0 で初期化
     merged["latest"] = 0
     # corporate_number ごとに update_date が最大の行を latest=1 に設定
-    is_latest = merged["update_date"].eq(
-        merged.groupby("corporate_number")["update_date"].transform("max")
-    )
-    merged.loc[is_latest, "latest"] = 1
+    idx = merged.groupby("corporate_number", sort=False)["update_date"].idxmax()
+    merged.loc[idx, "latest"] = 1
 
     logger.info(f"Merged DataFrame shape: {merged.shape}")
     return merged
@@ -151,18 +149,20 @@ def missing_kanji_stat(df: pd.DataFrame) -> None:
     return mk_stat[cols]
 
 if __name__ == "__main__":
+    exec_date = pd.Timestamp.now().strftime("%Y%m%d")
+
     # 法人番号サイトからデータを取得して保存
-    new = fetch()
+    fetch("SHIMANE")
     # 前回実行分のデータを読み込み
-    base = load_parquet(f"nta_corporate_registry.parquet")
+    new = load_parquet(f"corpreg_nta_{exec_date[:6]}.parquet")
+    base = load_parquet(f"corpreg_nta_master.parquet")
     # 新旧データをマージして保存
     merged = merge(new, base)
-    save_parquet(merged, f"nta_corporate_registry.parquet")
+    save_parquet(merged, f"corpreg_nta_master.parquet")
     # マスターデータの法人名をエンリッチ
     merged = enrich_name(merged)
-    save_parquet(merged, f"nta_corporate_registry.parquet")
-    
-    exec_date = pd.Timestamp.now().strftime("%Y%m%d")
+    save_parquet(merged, f"corpreg_nta_master.parquet")
+
     # legal_form の統計情報を報告
     lf_stat = legal_form_stat(merged)
     save_parquet(lf_stat, f"legal_form_stat_{exec_date}.parquet")
