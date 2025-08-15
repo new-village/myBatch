@@ -5,4 +5,4 @@ pandas
 sudachipy>=0.6.10
 sudachidict-core>=20250515
 jpcorpreg
-ja-entity-parser
+ja-entity-parser>=0.2.0

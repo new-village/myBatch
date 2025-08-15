@@ -29,7 +29,12 @@ def load_parquet(filename: str, memory_map: bool = True) -> pd.DataFrame:
     """
     full_path = os.path.join("/data", filename)
     if os.path.exists(full_path):
-        df = pd.read_parquet(full_path, engine="pyarrow", dtype_backend="pyarrow", memory_map=True)
+        df = pd.read_parquet(
+            full_path,
+            engine="pyarrow",
+            dtype_backend="pyarrow",
+            memory_map=memory_map,
+        )
         logger.info(f"Loaded from {full_path}: {df.shape}")
     else:
         df = pd.DataFrame(columns=["corporate_number", "name"])
@@ -58,13 +63,7 @@ def fetch(prefecture:str = "ALL") -> pd.DataFrame:
     logger.info(f"Loading corporate registry as of {exec_date}")
 
     # 法人情報を取得して保存
-    df = jpcorpreg.load(prefecture=prefecture)
-
-    if df is not None:
-        save_parquet(df, f"corpreg_nta_{exec_date}.parquet")
-    else:
-        df = pd.DataFrame(index=pd.Index([], name="corporate_number"))
-        logger.warning(f"Corporate registry data do not found. Returning empty DataFrame.")
+    return jpcorpreg.load(prefecture=prefecture)
 
 def merge(new: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     """新しい法人情報と古い法人情報をマージする関数
@@ -81,12 +80,15 @@ def merge(new: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     merged.drop_duplicates(subset=["corporate_number", "update_date"],
                        keep="first", inplace=True, ignore_index=True)
 
+    # Arrow 拡張配列だと groupby idxmax が未実装のため、update_date を pandas ネイティブ型へ
+    merged["update_date"] = merged["update_date"].astype(pd.StringDtype(storage="python"))
+
     # 全行の latest=0 で初期化
     merged["latest"] = 0
     # corporate_number ごとに update_date が最大の行を latest=1 に設定
     idx = merged.groupby("corporate_number", sort=False)["update_date"].idxmax()
     merged.loc[idx, "latest"] = 1
-
+    
     logger.info(f"Merged DataFrame shape: {merged.shape}")
     return merged
 
@@ -99,10 +101,11 @@ def _parse_name_worker(name: object) -> dict:
         return {
             "legal_form": res.get("legal_form"),
             "brand_name": res.get("brand_name"),
+            "brand_kana": res.get("brand_kana", ""),
         }
     except Exception:
         # 例外は親に伝播させず欠損扱い
-        return {"legal_form": None, "brand_name": None}
+        return {"legal_form": None, "brand_name": None, "brand_kana": None}
 
 def enrich_name(df: pd.DataFrame) -> pd.DataFrame:
     """法人名を補完する関数
@@ -117,6 +120,7 @@ def enrich_name(df: pd.DataFrame) -> pd.DataFrame:
     parsed = pd.DataFrame(rows, index=df.index)
     df["legal_form"] = parsed["legal_form"]
     df["brand_name"] = parsed["brand_name"]
+    df["brand_kana"] = parsed["brand_kana"]
     logger.info(f"Enrich DataFrame shape: {df.shape}")
     return df
 
@@ -151,8 +155,15 @@ def missing_kanji_stat(df: pd.DataFrame) -> None:
 if __name__ == "__main__":
     exec_date = pd.Timestamp.now().strftime("%Y%m%d")
 
+    # 引数処理
+    if len(sys.argv) > 1:
+        prefecture = sys.argv[1].upper()
+    else:
+        prefecture = "ALL"
+
     # 法人番号サイトからデータを取得して保存
-    fetch("SHIMANE")
+    new = fetch(prefecture)
+    save_parquet(new, f"corpreg_nta_{exec_date[:6]}.parquet")
     # 前回実行分のデータを読み込み
     new = load_parquet(f"corpreg_nta_{exec_date[:6]}.parquet")
     base = load_parquet(f"corpreg_nta_master.parquet")
