@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import numpy as np
 import pandas as pd
 import jpcorpreg
 from ja_entityparser import corporate_parser
@@ -59,7 +60,7 @@ def fetch(prefecture:str = "ALL") -> pd.DataFrame:
         df = fetch_data()
     """
     # 日付を付与してファイル名を決定
-    exec_date = pd.Timestamp.now().strftime("%Y%m")
+    exec_date = pd.Timestamp.now().strftime("%Y年%m月")
     logger.info(f"Loading corporate registry as of {exec_date}")
 
     # 法人情報を取得して保存
@@ -71,6 +72,7 @@ def merge(new: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     例:
         merged = merge(new, old)
     """
+    logger.info(f"Start merging")
     if base.empty:
         logger.warning("Skip merging with empty base DataFrame.")
         return new
@@ -95,7 +97,7 @@ def merge(new: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
 def _parse_name_worker(name: object) -> dict:
     # 子プロセス側で安全に Sudachi を使うためのワーカー
     if not isinstance(name, str) or not name.strip():
-        return {"legal_form": None, "brand_name": None}
+        return {"legal_form": None, "brand_name": None, "brand_kana": None}
     try:
         res = corporate_parser(name)
         return {
@@ -113,6 +115,7 @@ def enrich_name(df: pd.DataFrame) -> pd.DataFrame:
     例:
         df = enrich_name(df)
     """
+    logger.info(f"Start merging")
     # プロセス並列で Sudachi のグローバル共有を回避
     names = df["name"].tolist() if "name" in df.columns else []
     with ProcessPoolExecutor(max_workers=4) as ex:
@@ -170,8 +173,17 @@ if __name__ == "__main__":
     # 新旧データをマージして保存
     merged = merge(new, base)
     save_parquet(merged, f"corpreg_nta_master.parquet")
-    # マスターデータの法人名をエンリッチ
-    merged = enrich_name(merged)
+
+    # メモリエラーを回避するためにデータを分割
+    num_chunks = 10
+    chunks = np.array_split(merged, num_chunks)
+    chunk_list = []
+    for i, chunk in enumerate(chunks):
+        logger.info(f"Processing chunk {i+1}/{num_chunks} with shape {chunk.shape}")
+        chunk = enrich_name(chunk)
+        chunk_list.append(chunk)
+
+    merged = pd.concat(chunk_list, ignore_index=True)
     save_parquet(merged, f"corpreg_nta_master.parquet")
 
     # legal_form の統計情報を報告
