@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 con = duckdb.connect()
-con.execute("PRAGMA threads=2")
+con.execute("PRAGMA threads=1")
 con.execute("PRAGMA memory_limit='3GB'")  # コンテナ4GB運用でも安全
 
 def fetch(filename: str, pref: str | None = None) -> None:
