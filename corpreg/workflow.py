@@ -19,17 +19,18 @@ con = duckdb.connect()
 con.execute("PRAGMA threads=2")
 con.execute("PRAGMA memory_limit='3GB'")  # コンテナ4GB運用でも安全
 
-def fetch(filename:str, prefecture:str = "ALL") -> None:
+def fetch(filename: str, pref: str | None = None) -> None:
     """法人番号公表サイトから法人情報を取得する関数
 
     例:
         df = fetch("corpreg_nta_202508.parquet", "ALL")
     """
     # 法人情報を取得して保存
-    file_path = jpcorpreg.load(prefecture=prefecture, format="parquet")
+    file_path = jpcorpreg.load(prefecture=pref, format="parquet")
     con.read_parquet(file_path).write_parquet(filename, compression="zstd")
 
-    cnt = con.read_parquet(new_file).aggregate("COUNT(*)").fetchone()[0]
+    # 出力件数をログに出す
+    cnt = con.read_parquet(filename).aggregate("COUNT(*)").fetchone()[0]
     logger.info(f"Fetch {filename}: {cnt}")
     return
 
@@ -194,7 +195,9 @@ if __name__ == "__main__":
 
     # 引数処理
     if len(sys.argv) > 1:
-        prefecture = sys.argv[1].upper()
+        # 入力はそのまま保持（大文字化しない）。
+        # jpcorpreg は "Shimane" 等の表記を想定。"ALL"/未指定は全国。
+        prefecture = sys.argv[1]
     else:
         prefecture = "ALL"
 
