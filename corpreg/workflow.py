@@ -26,16 +26,11 @@ def fetch(filename:str, prefecture:str = "ALL") -> None:
         df = fetch("corpreg_nta_202508.parquet", "ALL")
     """
     # 法人情報を取得して保存
-    df = jpcorpreg.load(prefecture=prefecture)
+    file_path = jpcorpreg.load(prefecture=prefecture, format="parquet")
+    con.read_parquet(file_path).write_parquet(filename, compression="zstd")
 
-    # ファイルの保存
-    df.to_parquet(
-        filename,
-        engine="pyarrow",
-        compression="zstd",        # snappy でも可。zstd は圧縮率が高め
-        use_dictionary=True,       # 文字列などを辞書エンコード
-    )
-    logger.info(f"Save {filename}: {df.shape}")
+    cnt = con.read_parquet(new_file).aggregate("COUNT(*)").fetchone()[0]
+    logger.info(f"Fetch {filename}: {cnt}")
     return
 
 def merge(new_file: str, base_file: str) -> None:
