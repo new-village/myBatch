@@ -7,6 +7,7 @@ import jpcorpreg
 from ja_entityparser import corporate_parser
 from concurrent.futures import ProcessPoolExecutor
 import pyarrow as pa
+import ja_entityparser
 
 # Set up logger object
 logging.basicConfig(
@@ -173,14 +174,44 @@ def missing_kanji_stat(df: pd.DataFrame) -> None:
     return mk_stat[cols]
 
 def furigana_stat(df: pd.DataFrame) -> None:
-    """法人名の報告を行う関数
+    """フリガナの報告を行う関数
     例:
         furigana_stat(df)
     """
-    f_stat = df[df['reliability'] == 1]
+    f_stat = df[
+        (df['reliability'] == 1) &
+        df['brand_name'].str.contains(r"[^ァ-ヶーｦ-ﾟ・･\s]", na=False)
+    ]
     logger.info(f"Furigana enrichment records: {f_stat.shape[0]}")
     cols = ['corporate_number', 'name', 'brand_name', 'furigana', 'brand_kana']
     return f_stat[cols]
+
+def stat_report(df: pd.DataFrame) -> None:
+    """統計情報の報告を行う関数
+    例:
+        stat_report(df)
+    """
+    # ja-entity-parser version logging
+    ver = getattr(ja_entityparser, "__version__", None)
+    logger.info(f"ja-entity-parser version: {ver}")
+    total = df.shape[0]
+    logger.info(f"Total Records：{total}件")
+
+    # フリガナの欠損件数
+    mask = df["furigana"].isna() | df["furigana"].astype(str).str.strip().eq("")
+    missing = int(mask.sum())
+    logger.info(f"furigana enrichment records：{missing}件（{missing / total * 100:.2f}%）")
+
+    # 法人種別の欠損件数
+    mask = df["legal_form"].isna() | df["legal_form"].astype(str).str.strip().eq("")
+    missing = int(mask.sum())
+    logger.info(f"legal_form enrichment records：{missing}件（{missing / total * 100:.2f}%）")
+
+    # ブランド名の欠損件数
+    mask = df["brand_name"].isna() | df["brand_name"].astype(str).str.strip().eq("")
+    missing = int(mask.sum())
+    logger.info(f"brand_name enrichment records：{missing}件（{missing / total * 100:.2f}%）")
+
 
 if __name__ == "__main__":
     exec_date = pd.Timestamp.now().strftime("%Y%m%d")
@@ -223,3 +254,5 @@ if __name__ == "__main__":
     # furigana に関する統計情報を報告
     f_stat = furigana_stat(merged)
     save_parquet(f_stat, f"furigana_stat_{exec_date}.parquet")
+    # 統計情報をログに出力
+    stat_report(merged)
