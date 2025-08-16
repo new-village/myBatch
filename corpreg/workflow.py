@@ -1,13 +1,11 @@
 import os
+import re
 import sys
 import logging
-import numpy as np
 import pandas as pd
 import jpcorpreg
+import duckdb
 from ja_entityparser import corporate_parser
-from concurrent.futures import ProcessPoolExecutor
-import pyarrow as pa
-import ja_entityparser
 
 # Set up logger object
 logging.basicConfig(
@@ -17,201 +15,184 @@ logging.basicConfig(
     )
 logger = logging.getLogger(__name__)
 
+con = duckdb.connect()
+con.execute("PRAGMA threads=2")
+con.execute("PRAGMA memory_limit='3GB'")  # コンテナ4GB運用でも安全
 
-def load_parquet(filename: str, memory_map: bool = True) -> pd.DataFrame:
-    """/data 配下に単一の .parquet ファイルを読み込む関数。
-
-    - filename: /data 直下またはサブディレクトリのファイル名。
-    - columns: 読み込む列を限定（省メモリ）
-    - memory_map: OS のメモリマップを使用（省コピー）
+def fetch(filename:str, prefecture:str = "ALL") -> None:
+    """法人番号公表サイトから法人情報を取得する関数
 
     例:
-        df = load_parquet("corporate_registry_202508.parquet", columns=["corporate_number","name"])
-        df = load_parquet("subdir/file.parquet")
+        df = fetch("corpreg_nta_202508.parquet", "ALL")
     """
-    full_path = os.path.join("/data", filename)
-    if os.path.exists(full_path):
-        df = pd.read_parquet(
-            full_path,
-            engine="pyarrow",
-            dtype_backend="pyarrow",
-            memory_map=memory_map,
-        )
-        logger.info(f"Loaded from {full_path}: {df.shape}")
-    else:
-        df = pd.DataFrame(columns=["corporate_number", "name"])
-        logger.warning(f"File not found: {full_path}. Returning empty DataFrame.")
-    return df
+    # 法人情報を取得して保存
+    df = jpcorpreg.load(prefecture=prefecture)
 
-def save_parquet(df: pd.DataFrame, filename: str) -> None:
-    """/data 配下に単一の .parquet ファイルを保存する関数。"""
-    full_path = os.path.join("/data", filename)
+    # ファイルの保存
     df.to_parquet(
-        full_path,
+        filename,
         engine="pyarrow",
         compression="zstd",        # snappy でも可。zstd は圧縮率が高め
         use_dictionary=True,       # 文字列などを辞書エンコード
     )
-    logger.info(f"Saved to {full_path}: {df.shape}")
+    logger.info(f"Save {filename}: {df.shape}")
+    return
 
-def fetch(prefecture:str = "ALL") -> pd.DataFrame:
-    """法人番号公表サイトから法人情報を取得する関数
-
-    例:
-        df = fetch_data()
-    """
-    # 日付を付与してファイル名を決定
-    exec_date = pd.Timestamp.now().strftime("%Y年%m月")
-    logger.info(f"Loading corporate registry as of {exec_date}")
-
-    # 法人情報を取得して保存
-    return jpcorpreg.load(prefecture=prefecture)
-
-def merge(new: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+def merge(new_file: str, base_file: str) -> None:
     """新しい法人情報と古い法人情報をマージする関数
 
     例:
         merged = merge(new, old)
     """
-    logger.info(f"Start merging")
-    if base.empty:
-        logger.warning("Skip merging with empty base DataFrame.")
-        return new
+    # base_file が無い場合は new_file をそのまま初期化として書き出し
+    if not os.path.exists(base_file):
+        select = """
+            *,
+            CAST(NULL AS VARCHAR) AS legal_form,
+            CAST(NULL AS VARCHAR) AS brand_name,
+            CAST(NULL AS VARCHAR) AS brand_kana,
+            CAST(0 AS INTEGER) AS reliability
+        """
+        con.read_parquet(new_file).project(select).write_parquet(base_file, compression="zstd")
+        cnt = con.read_parquet(new_file).aggregate("COUNT(*)").fetchone()[0]
+        logger.info(f"Create {base_file}: {cnt}")
+        return
 
-    # 新旧のデータフレームを単純に縦結合して、重複を削除
-    merged = pd.concat([new, base], axis=0, ignore_index=True)
-    merged.drop_duplicates(subset=["corporate_number", "update_date"],
-                       keep="first", inplace=True, ignore_index=True)
+    # new/base を一時ビューとして登録
+    con.read_parquet(new_file).create_view("new_data", replace=True)
+    con.read_parquet(base_file).create_view("base_data", replace=True)
 
-    # Arrow 拡張配列だと groupby idxmax が未実装のため、update_date を pandas ネイティブ型へ
-    merged["update_date"] = merged["update_date"].astype(pd.StringDtype(storage="python"))
+    # base に存在しない行を抽出（ビュー名に予約語を避ける）
+    con.sql(f"""
+        CREATE OR REPLACE TEMP VIEW unique_new AS
+        SELECT
+            n.*,
+            CAST(NULL AS VARCHAR) AS legal_form,
+            CAST(NULL AS VARCHAR) AS brand_name,
+            CAST(NULL AS VARCHAR) AS brand_kana,
+            CAST(0 AS INTEGER) AS reliability
+        FROM new_data n
+        ANTI JOIN base_data b ON 
+            n.corporate_number = b.corporate_number AND
+            n.update_date      = b.update_date;
+    """)
 
-    # 全行の latest=0 で初期化
-    merged["latest"] = 0
-    # corporate_number ごとに update_date が最大の行を latest=1 に設定
-    idx = merged.groupby("corporate_number", sort=False)["update_date"].idxmax()
-    merged.loc[idx, "latest"] = 1
-    
-    logger.info(f"Merged DataFrame shape: {merged.shape}")
-    return merged
+    # UNIONして一時ファイルに書き出して原子的置換
+    tmp_out = base_file + ".tmp"
+    con.sql("SELECT * FROM base_data UNION ALL SELECT * FROM unique_new") \
+      .write_parquet(tmp_out, compression="zstd")
+    os.replace(tmp_out, base_file)
 
-def _parse_name_worker(name: object) -> dict:
-    # 子プロセス側で安全に Sudachi を使うためのワーカー
-    if not isinstance(name, str) or not name.strip():
-        return {"legal_form": None, "brand_name": None, "brand_kana": None}
-    try:
-        res = corporate_parser(name)
-        return {
-            "legal_form": res.get("legal_form"),
-            "brand_name": res.get("brand_name"),
-            "brand_kana": res.get("brand_kana", ""),
-        }
-    except Exception:
-        # 例外は親に伝播させず欠損扱い
-        return {"legal_form": None, "brand_name": None, "brand_kana": None}
+    # 件数検算
+    cnt = con.read_parquet(base_file).aggregate("COUNT(*)").fetchone()[0]
+    logger.info(f"Add new/change records to {base_file}: {cnt}")
+    return
 
-def enrich_name(df: pd.DataFrame) -> pd.DataFrame:
-    """法人名を補完する関数
-
-    例:
-        df = enrich_name(df)
+def _parse_tuple(name: str) -> tuple[str, str, str]:
+    """ ユーザ定義関数で法人名を解析し、法人種別、ブランド名、ブランド名カナを返す
     """
-    # プロセス並列で Sudachi のグローバル共有を回避
-    names = df["name"].tolist() if "name" in df.columns else []
-    with ProcessPoolExecutor(max_workers=4) as ex:
-        rows = list(ex.map(_parse_name_worker, names))
-    parsed = pd.DataFrame(rows, index=df.index)
-    df["legal_form"] = parsed["legal_form"]
-    df["brand_name"] = parsed["brand_name"]
-    df["brand_kana"] = parsed["brand_kana"]
-    logger.info(f"Enrich DataFrame shape: {df.shape}")
-    return df
+    d = corporate_parser(name)
+    return (d.get("legal_form"), d.get("brand_name"), d.get("brand_kana"))
 
-def enrich_furigana(df: pd.DataFrame) -> pd.DataFrame:
-    """フリナガを補完する関数
+con.create_function(
+    "parse",
+    _parse_tuple,
+    ["VARCHAR"],  # 引数型
+    "STRUCT(legal_form VARCHAR, brand_name VARCHAR, brand_kana VARCHAR)"  # 戻り値
+)
 
+def enrich_name(base_file: str) -> None:
+    """法人種別、ブランド名、ブランド名カナを補完する関数
     例:
-        df = enrich_furigana(df)
+        enrich_name("corporate_registry.parquet")
     """
-    df['reliability'] = 0
-    # furigana が空白/欠損なら brand_kana を代入し、reliability=1
-    if "furigana" not in df.columns:
-        df["furigana"] = pd.Series([None] * len(df), index=df.index)
+    # 一時ファイルに書き出し
+    tmp_out = base_file + ".tmp"
+    select = """
+        * REPLACE (
+            (parse(name)).legal_form::VARCHAR AS legal_form,
+            (parse(name)).brand_name::VARCHAR AS brand_name,
+            (parse(name)).brand_kana::VARCHAR AS brand_kana
+        )
+    """
+    con.read_parquet(base_file).project(select).write_parquet(tmp_out, compression="zstd")
+    os.replace(tmp_out, base_file)
 
-    mask = df["furigana"].isna() | df["furigana"].astype(str).str.strip().eq("")
-    df.loc[mask, "furigana"] = df.loc[mask, "brand_kana"]
-    df.loc[mask, "reliability"] = 1
+    # 件数検算
+    cnt, lf_cnt = con.read_parquet(base_file).filter("kind not in ('101','201','399','499') AND latest = '1'").aggregate("COUNT(*), COUNT(legal_form)").fetchone()
+    logger.info(f"Complete enrich_name: {lf_cnt}/{cnt}({lf_cnt/cnt*100:.2f}%)")
+    return
 
-    return df
+def _is_katakana(kana: str) -> bool:
+    """ カタカナかどうかを判定する関数
+    """
+    reg = re.compile(r'^[\u30A0-\u30FF\uFF65-\uFF9F\u3000\s]+$')
+    return bool(reg.fullmatch(kana))
 
+con.create_function(
+    "is_katakana",
+    _is_katakana,
+    ["VARCHAR"],  # 引数型
+    "BOOLEAN"  # 戻り値
+)
 
-def legal_form_stat(df: pd.DataFrame) -> None:
-    """法人名の報告を行う関数
+def enrich_furigana(base_file: str) -> None:
+    """フリガナを補完する関数
     例:
-        legal_form_stat(df)
+        enrich_furigana("corporate_registry.parquet")
     """
-    lf_stat = df[
-        (df['latest'] == 1) &
-        (df['kind'] != '101') &
-        (df['kind'] != '201') &
-        (df['kind'] != '399') &
-        (df['kind'] != '499') &
-        (df['legal_form'].isnull() | (df['legal_form'] == ''))
-    ]
+    # 一時ファイルに書き出し
+    tmp_out = base_file + ".tmp"
 
-    logger.info(f"Unexpected legal form records: {lf_stat.shape[0]}")
-    cols = ['corporate_number', 'name', 'legal_form', 'brand_name']
-    return lf_stat[cols]
-
-def missing_kanji_stat(df: pd.DataFrame) -> None:
-    """法人名の報告を行う関数
-    例:
-        missing_kanji_stat(df)
+    # furiganaが空白/欠損ならfuriganaにbrand_kanaを代入
+    select = """
+        * REPLACE (
+            CASE WHEN furigana IS NOT NULL THEN furigana ELSE brand_kana END AS brand_kana,
+            CASE WHEN furigana IS NOT NULL OR is_katakana(brand_name) THEN 0 ELSE 1 END AS reliability
+        )
     """
-    mk_stat = df[df["name"].astype(str).str.contains("＿", na=False, regex=False)]
-    logger.info(f"Missing kanji (underscore in name) records: {mk_stat.shape[0]}")
-    cols = ['corporate_number', 'name', 'name_image_id']
-    return mk_stat[cols]
+    con.read_parquet(base_file).project(select).write_parquet(tmp_out, compression="zstd")
+    os.replace(tmp_out, base_file)
 
-def furigana_stat(df: pd.DataFrame) -> None:
-    """フリガナの報告を行う関数
-    例:
-        furigana_stat(df)
-    """
-    f_stat = df[
-        (df['reliability'] == 1) &
-        df['brand_name'].str.contains(r"[^ァ-ヶーｦ-ﾟ・･\s]", na=False)
-    ]
-    logger.info(f"Furigana enrichment records: {f_stat.shape[0]}")
-    cols = ['corporate_number', 'name', 'brand_name', 'furigana', 'brand_kana']
-    return f_stat[cols]
+    # 件数検算
+    cnt, rel_cnt = con.read_parquet(base_file).aggregate("COUNT(*), SUM(reliability)").fetchone()
+    logger.info(f"Complete enrich_furigana: {rel_cnt}/{cnt}({rel_cnt/cnt*100:.2f}%)")
+    return
 
-def stat_report(df: pd.DataFrame) -> None:
+def stat_report(base_file: str) -> None:
     """統計情報の報告を行う関数
     例:
         stat_report(df)
     """
-    # ja-entity-parser version logging
-    ver = getattr(ja_entityparser, "__version__", None)
-    logger.info(f"ja-entity-parser version: {ver}")
-    total = df.shape[0]
-    logger.info(f"Total Records：{total}件")
+    # 総件数の取得
+    total = con.read_parquet(base_file).aggregate("COUNT(*)").fetchone()[0]
 
-    # フリガナの欠損件数
-    mask = df["furigana"].isna() | df["furigana"].astype(str).str.strip().eq("")
-    missing = int(mask.sum())
-    logger.info(f"furigana enrichment records：{missing}件（{missing / total * 100:.2f}%）")
+    # Name に'＿'（外字）が含まれるレコードの抽出
+    cond = "name like '%＿%'"
+    select = "corporate_number, name, name_image_id"
+    filename = os.path.join("/data", "irregular_name.parquet")
+    con.read_parquet(base_file).filter(cond).project(select).write_parquet(filename, compression="zstd")
+    count = con.read_parquet(filename).aggregate("COUNT(*)").fetchone()[0]
+    logger.info(f"Save {filename}: {count}/{total}({count/total*100:.2f}%)")
 
-    # 法人種別の欠損件数
-    mask = df["legal_form"].isna() | df["legal_form"].astype(str).str.strip().eq("")
-    missing = int(mask.sum())
-    logger.info(f"legal_form enrichment records：{missing}件（{missing / total * 100:.2f}%）")
+    # Legal form のパース失敗レコードの抽出
+    cond = "kind not in ('101','201','399','499') AND latest = '1'"
+    lf_total = con.read_parquet(base_file).filter(cond).aggregate("COUNT(*)").fetchone()[0]
+    cond = cond + " AND legal_form IS NULL"
+    select = "corporate_number, name, legal_form, brand_name"
+    filename = os.path.join("/data", "irregular_legal_form.parquet")
+    con.read_parquet(base_file).filter(cond).project(select).write_parquet(filename, compression="zstd")
+    count = con.read_parquet(filename).aggregate("COUNT(*)").fetchone()[0]
+    logger.info(f"Save {filename}: {count}/{lf_total}({count/lf_total*100:.2f}%)")
 
-    # ブランド名の欠損件数
-    mask = df["brand_name"].isna() | df["brand_name"].astype(str).str.strip().eq("")
-    missing = int(mask.sum())
-    logger.info(f"brand_name enrichment records：{missing}件（{missing / total * 100:.2f}%）")
-
+    # フリガナが不十分なレコードの抽出
+    cond = "reliability = 1"
+    select = "corporate_number, name, brand_name, furigana, brand_kana"
+    filename = os.path.join("/data", "irregular_furigana.parquet")
+    con.read_parquet(base_file).filter(cond).project(select).write_parquet(filename, compression="zstd")
+    count = con.read_parquet(filename).aggregate("COUNT(*)").fetchone()[0]
+    logger.info(f"Save {filename}: {count}/{total}({count/total*100:.2f}%)")
+    
 
 if __name__ == "__main__":
     exec_date = pd.Timestamp.now().strftime("%Y%m%d")
@@ -223,36 +204,16 @@ if __name__ == "__main__":
         prefecture = "ALL"
 
     # 法人番号サイトからデータを取得して保存
-    new = fetch(prefecture)
-    save_parquet(new, f"corpreg_nta_{exec_date[:6]}.parquet")
-    # 前回実行分のデータを読み込み
-    new = load_parquet(f"corpreg_nta_{exec_date[:6]}.parquet")
-    base = load_parquet(f"corpreg_nta_master.parquet")
+    new_file = os.path.join("/data", f"corpreg_nta_{exec_date[:6]}.parquet")
+    fetch(new_file, prefecture)
+
     # 新旧データをマージして保存
-    merged = merge(new, base)
-    save_parquet(merged, f"corpreg_nta_master.parquet")
+    base_file = os.path.join("/data", f"corpreg_nta_master.parquet")
+    merge(new_file, base_file)
 
-    # メモリエラーを回避するためにデータを分割
-    num_chunks = 10
-    chunks = np.array_split(merged, num_chunks)
-    chunk_list = []
-    for i, chunk in enumerate(chunks):
-        logger.info(f"Processing chunk {i+1}/{num_chunks} with shape {chunk.shape}")
-        chunk = enrich_name(chunk)
-        chunk = enrich_furigana(chunk)
-        chunk_list.append(chunk)
+    # 名称のエンリッチ
+    enrich_name(base_file)
+    enrich_furigana(base_file)
 
-    merged = pd.concat(chunk_list, ignore_index=True)
-    save_parquet(merged, f"corpreg_nta_master.parquet")
-
-    # legal_form の統計情報を報告
-    lf_stat = legal_form_stat(merged)
-    save_parquet(lf_stat, f"legal_form_stat_{exec_date}.parquet")
-    # missing_kanji に関する統計情報を報告
-    mk_stat = missing_kanji_stat(merged)
-    save_parquet(mk_stat, f"missing_kanji_stat_{exec_date}.parquet")
-    # furigana に関する統計情報を報告
-    f_stat = furigana_stat(merged)
-    save_parquet(f_stat, f"furigana_stat_{exec_date}.parquet")
-    # 統計情報をログに出力
-    stat_report(merged)
+    # 統計レポート
+    stat_report(base_file)
